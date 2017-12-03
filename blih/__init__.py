@@ -1,12 +1,11 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 
 #-
-# Copyright 2013-2015 Emmanuel Vadot <elbarto@bocal.org>
+# Copyright 2013-2014 Emmanuel Vadot <elbarto@bocal.org>
 # All rights reserved
 #
 # Redistribution and use in source and binary forms, with or without
-# modification, are permitted providing that the following conditions
+# modification, are permitted providing that the following conditions 
 # are met:
 # 1. Redistributions of source code must retain the above copyright
 #    notice, this list of conditions and the following disclaimer.
@@ -26,345 +25,287 @@
 # IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""
-Bocal Lightweight Interface for Humans
-"""
-
-from __future__ import print_function
-
-import sys
 import os
-
-from argparse import ArgumentParser
+import sys
+import getopt
+import hmac
+import hashlib
+import urllib.request
+import urllib.parse
+import json
 import getpass
 
-__version__ = '2.0'
+version = 1.7
 
-USER_AGENT = 'blih-' + __version__
-API_VERSION = '2.0'
-URL = 'https://blih.epitech.eu/' + API_VERSION
+class blih:
+    def __init__(self, baseurl='https://blih.epitech.eu/', user=None, token=None, verbose=False, user_agent='blih-' + str(version)):
+        self._baseurl = baseurl
+        if token:
+            self._token = token
+        else:
+            self.token_calc()
+        if user == None:
+            self._user = getpass.getuser()
+        else:
+            self._user = user
+        self._verbose = verbose
+        self._useragent = user_agent
 
-class BlihError(Exception):
-    """
-    Base exception class
-    """
-    pass
+    def token_get(self):
+        return self._token
 
-def blih(method, resource, auth, data=None):
-    """
-    Wrapper around requests
-    """
-    try:
-        import requests
-    except ImportError:
-        raise
-    try:
-        requests_method = getattr(requests, method)
-        req = requests_method(
-            URL + resource,
-            auth=auth,
-            headers={'User-Agent' : USER_AGENT},
-            data=data
-        )
-        if req.status_code != 204:
-            data = req.json()
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-        raise BlihError('Can\'t connect to {0}'.format(URL))
-    except requests.exceptions.HTTPError:
-        raise BlihError('An HTTP Error occured')
-    except ValueError:
-        raise BlihError('Unknown Error')
+    def token_set(self, token):
+        self._token = token
 
-    if req.status_code in [400, 401, 403, 404, 405, 409]:
-        raise BlihError(data['message'])
+    token = property(token_get, token_set)
 
-    return data
+    def token_calc(self):
+        self._token = bytes(hashlib.sha512(bytes(getpass.getpass(), 'utf8')).hexdigest(), 'utf8')
 
-# pylint: disable=unused-argument
-def repository_create(user, password, name, **kwargs):
-    """
-    Create a repository
-    """
-    data = blih(
-        'post',
-        '/repositories',
-        (user, password),
-        data={'name' : name, 'type' : 'git'}
-    )
+    def sign_data(self, data=None):
+        signature = hmac.new(self._token, msg=bytes(self._user, 'utf8'), digestmod=hashlib.sha512)
+        if data:
+            signature.update(bytes(json.dumps(data, sort_keys=True, indent=4, separators=(',', ': ')), 'utf8'))
 
-    return {data : data}
+        signed_data = {'user' : self._user, 'signature' : signature.hexdigest()}
+        if data != None:
+            signed_data['data'] = data
 
-# pylint: disable=unused-argument
-def repository_delete(user, password, name, **kwargs):
-    """
-    Delete a repository
-    """
-    data = blih(
-        'delete',
-        '/repository/' + name,
-        (user, password)
-    )
+        return signed_data
 
-    return {data : data}
+    def request(self, resource, method='GET', content_type='application/json', data=None, url=None):
+        signed_data = self.sign_data(data)
 
-# pylint: disable=unused-argument
-def repository_info(user, password, name, **kwargs):
-    """
-    Get some info about a repository
-    """
-    data = blih(
-        'get',
-        '/repository/' + name,
-        (user, password)
-    )
+        if url:
+            req = urllib.request.Request(url=url, method=method, data=bytes(json.dumps(signed_data), 'utf8'))
+        else:
+            req = urllib.request.Request(url=self._baseurl + resource, method=method, data=bytes(json.dumps(signed_data), 'utf8'))
+        req.add_header('Content-Type', content_type)
+        req.add_header('User-Agent', self._useragent)
 
-    return {data : data}
-
-# pylint: disable=unused-argument
-def repository_list(user, password, **kwargs):
-    """
-    List the users repositories
-    """
-    data = blih(
-        'get',
-        '/repositories',
-        (user, password)
-    )
-
-    return {data : data}
-
-# pylint: disable=unused-argument
-def repository_getacl(user, password, name, **kwargs):
-    """
-    Get the defined acls for one repo
-    """
-    data = blih(
-        'get',
-        '/repository/' + name + '/acls',
-        (user, password)
-    )
-
-    return {data : data}
-
-# pylint: disable=unused-argument
-def repository_setacl(user, password, name, user_acl, acl, **kwargs):
-    """
-    Set some acls on one repository
-    """
-    data = blih(
-        'post',
-        '/repository/' + name + '/acls',
-        (user, password),
-        data={'user' : user_acl, 'acl' : acl}
-    )
-
-    return {data : data}
-
-# pylint: disable=unused-argument
-def sshkey_upload(user, password, keyfile, **kwargs):
-    """
-    Upload a new sshkey
-    """
-    try:
-        handle = open(keyfile, 'r')
-    except (OSError, IOError):
-        raise BlihError('File {0} not found'.format(keyfile))
-
-    keydata = handle.read().strip('\n')
-    handle.close()
-
-    try:
-        keytype, key, comment = keydata.split(' ')
-    except ValueError:
-        raise
-
-    data = blih(
-        'post',
-        '/sshkeys',
-        (user, password),
-        data={'key' : keytype + ' ' + key, 'comment' : comment}
-    )
-
-    return {'data' : data,
-            'format' : '{key} {comment}'}
-
-# pylint: disable=unused-argument
-def sshkey_list(user, password, **kwargs):
-    """
-    List the sshkeys
-    """
-    data = blih(
-        'get',
-        '/sshkeys',
-        (user, password)
-    )
-
-    return {'data' : data,
-            'format' : '{key} {comment}'}
-
-# pylint: disable=unused-argument
-def sshkey_get(user, password, comment, **kwargs):
-    """
-    Get a sshkey
-    """
-    data = blih(
-        'get',
-        '/sshkeys/' + comment,
-        (user, password)
-    )
-
-    return {'data' : data,
-            'format' : '{key} {comment}'}
-
-# pylint: disable=unused-argument
-def sshkey_delete(user, password, comment, **kwargs):
-    """
-    Delete a sshkey
-    """
-    data = blih(
-        'delete',
-        '/sshkeys/' + comment,
-        (user, password)
-    )
-
-    return {'data' : data,
-            'format' : ''}
-
-#pylint: disable=R0914,too-many-statements
-def main():
-    """
-    Main entry point
-    """
-
-    parser = ArgumentParser()
-    parser.add_argument(
-        '-u', '--user',
-        help='The user',
-        default=os.environ.get('BLIH_USER', getpass.getuser())
-    )
-    parser.add_argument(
-        '-t', '--password',
-        help='Specify the password on the command line',
-        default=os.environ.get('BLIH_PASSWORD', None)
-    )
-
-    subparser = parser.add_subparsers(dest='command', help='The main command')
-    subparser.required = True
-
-    # Create the subparser for the repository argument
-    parser_repository = subparser.add_parser(
-        'repository',
-        help='Manage your repository'
-    )
-    subparser_repository = parser_repository.add_subparsers(
-        dest='subcommand',
-        help='The subcommand'
-    )
-    subparser_repository.required = True
-
-    # Create the subparser for the repository create command
-    parser_repo_create = subparser_repository.add_parser(
-        'create',
-        help='Create a repository'
-    )
-    parser_repo_create.add_argument('name', help='The repository name')
-    parser_repo_create.set_defaults(func=repository_create)
-
-    parser_repo_delete = subparser_repository.add_parser(
-        'delete',
-        help='Delete a repository'
-    )
-    parser_repo_delete.add_argument('name', help='The repository name')
-    parser_repo_delete.set_defaults(func=repository_delete)
-
-    parser_repo_info = subparser_repository.add_parser(
-        'info',
-        help='Get information about a repository'
-    )
-    parser_repo_info.add_argument('name', help='The repository name')
-    parser_repo_info.set_defaults(func=repository_info)
-
-    parser_repo_list = subparser_repository.add_parser(
-        'list',
-        help='Get the list of your repositories'
-    )
-    parser_repo_list.set_defaults(func=repository_list)
-
-    parser_repo_getacl = subparser_repository.add_parser(
-        'getacl',
-        help='Manage repository acls'
-    )
-    parser_repo_getacl.add_argument('name', help='The repository name')
-    parser_repo_getacl.set_defaults(func=repository_getacl)
-
-    parser_repo_setacl = subparser_repository.add_parser(
-        'setacl',
-        help='Get repository acls'
-    )
-    parser_repo_setacl.add_argument('name', help='The repository name')
-    parser_repo_setacl.add_argument('user_acl', help='The user to apply acls to')
-    parser_repo_setacl.add_argument('acl', help='The acl (r or w)')
-    parser_repo_setacl.set_defaults(func=repository_setacl)
-
-    parser_sshkey = subparser.add_parser(
-        'sshkey',
-        help='Manage your sshkey'
-    )
-    subparser_sshkey = parser_sshkey.add_subparsers(
-        dest='subcommand',
-        help='The sshkey subcommand'
-    )
-    subparser_sshkey.required = True
-
-    parser_sshkey_upload = subparser_sshkey.add_parser(
-        'upload',
-        help='Upload a new sshkey'
-    )
-    parser_sshkey_upload.add_argument(
-        'keyfile',
-        help='The sshkey file to upload',
-        nargs='?',
-        default=os.getenv('HOME') + '/.ssh/id_rsa.pub'
-    )
-    parser_sshkey_upload.set_defaults(func=sshkey_upload)
-
-    parser_sshkey_list = subparser_sshkey.add_parser(
-        'list',
-        help='List your sshkey(s)'
-    )
-    parser_sshkey_list.set_defaults(func=sshkey_list)
-
-    parser_sshkey_get = subparser_sshkey.add_parser(
-        'get',
-        help='Get a sshkey'
-    )
-    parser_sshkey_get.add_argument('comment', help='The sshkey comment')
-    parser_sshkey_get.set_defaults(func=sshkey_get)
-
-    parser_sshkey_delete = subparser_sshkey.add_parser(
-        'delete',
-        help='Delete a sshkey'
-    )
-    parser_sshkey_delete.add_argument('comment', help='The comment of the sshkey file to delete')
-    parser_sshkey_delete.set_defaults(func=sshkey_delete)
-
-    argument = parser.parse_args()
-
-    if argument.password == None:
         try:
-            argument.password = getpass.getpass()
-        except KeyboardInterrupt:
+            f = urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            print ('HTTP Error ' + str(e.code))
+            data = json.loads(e.read().decode('utf8'))
+            print ("Error message : '" + data['error'] + "'")
             sys.exit(1)
 
-    try:
-        ret = argument.func(**vars(argument))
-    except BlihError as err:
-        print('Error: {0}'.format(err))
+        if f.status == 200:
+            try:
+                data = json.loads(f.read().decode('utf8'))
+            except:
+                print ("Can't decode data, aborting")
+                sys.exit(1)
+            return (f.status, f.reason, f.info(), data)
+
+        print ('Unknown error')
         sys.exit(1)
 
-    if ret['data']:
-        if isinstance(ret['data'], list):
-            for item in ret['data']:
-                print(ret['format'].format(**item))
-        elif isinstance(ret['data'], dict):
-            print(ret['format'].format(**ret['data']))
+    def repo_create(self, name, type='git', description=None):
+        data = {'name' : name, 'type' : type}
+        if description:
+            data['description'] = description
+        status, reason, headers, data = self.request('/repositories', method='POST', data=data)
+        print (data['message'])
+
+    def repo_list(self):
+        status, reason, headers, data = self.request('/repositories', method='GET')
+        for i in data['repositories']:
+            print (i)
+
+    def repo_delete(self, name):
+        status, reason, headers, data = self.request('/repository/' + name, method='DELETE')
+        print (data['message'])
+
+    def repo_info(self, name):
+        status, reason, headers, data = self.request('/repository/' + name, method='GET')
+        print (data['message'])
+
+    def repo_setacl(self, name, acluser, acl):
+        data = {'user' : acluser, 'acl' : acl}
+        status, reason, headers, data = self.request('/repository/' + name + '/acls', method='POST', data=data)
+        print (data['message'])
+
+    def repo_getacl(self, name):
+        status, reason, headers, data = self.request('/repository/' + name + '/acls', method='GET')
+        for i in data.keys():
+            print (i + ':' + data[i])
+
+    def sshkey_upload(self, keyfile):
+        try:
+            f = open(keyfile, 'r')
+        except (PermissionError, FileNotFoundError):
+            print ("Can't open file : " + keyfile)
+            return
+        key = urllib.parse.quote(f.read().strip('\n'))
+        f.close()
+        data = {'sshkey' : key}
+        status, reason, headers, data = self.request('/sshkeys', method='POST', data=data)
+        print (data['message'])
+
+    def sshkey_delete(self, sshkey):
+        status, reason, headers, data = self.request('/sshkey/' + sshkey, method='DELETE')
+        print (data['message'])
+
+    def sshkey_list(self):
+        status, reason, headers, data = self.request('/sshkeys', method='GET')
+        for i in data.keys():
+            print (data[i] + ' ' + i)
+
+    def whoami(self):
+        status, reason, headers, data = self.request('/whoami', method='GET')
+        print (data['message'])
+
+def usage_repository():
+    print ('Usage: ' + sys.argv[0] + ' [options] repository command ...')
+    print ()
+    print ('Commands :')
+    print ('\tcreate repo\t\t\t-- Create a repository named "repo"')
+    print ('\tinfo repo\t\t\t-- Get the repository metadata')
+    print ('\tgetacl repo\t\t\t-- Get the acls set for the repository')
+    print ('\tlist\t\t\t\t-- List the repositories created')
+    print ('\tsetacl repo user [acl]\t\t-- Set (or remove) an acl for "user" on "repo"')
+    print ('\t\t\t\t\tACL format:')
+    print ('\t\t\t\t\tr for read')
+    print ('\t\t\t\t\tw for write')
+    print ('\t\t\t\t\ta for admin')
+    sys.exit(1)
+
+def repository(args, baseurl, user, token, verbose, user_agent):
+    if len(args) == 0:
+        usage_repository()
+    if args[0] == 'create':
+        if len(args) != 2:
+            usage_repository()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_create(args[1])
+    elif args[0] == 'list':
+        if len(args) != 1:
+            usage_repository()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_list()
+    elif args[0] == 'info':
+        if len(args) != 2:
+            usage_repository()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_info(args[1])
+    elif args[0] == 'delete':
+        if len(args) != 2:
+            usage_repository()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_delete(args[1])
+    elif args[0] == 'setacl':
+        if len(args) != 4 and len(args) != 3:
+            usage_repository()
+        if len(args) == 3:
+            acl = ''
+        else:
+            acl = args[3]
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_setacl(args[1], args[2], acl)
+    elif args[0] == 'getacl':
+        if len(args) != 2:
+            usage_repository()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.repo_getacl(args[1])
+    else:
+        usage_repository()
+
+def usage_sshkey():
+    print ('Usage: ' + sys.argv[0] + ' [options] sshkey command ...')
+    print ()
+    print ('Commands :')
+    print ('\tupload [file]\t\t\t-- Upload a new ssh-key')
+    print ('\tlist\t\t\t\t-- List the ssh-keys')
+    print ('\tdelete <sshkey>\t\t\t-- Delete the sshkey with comment <sshkey>')
+    sys.exit(1)
+
+def sshkey(args, baseurl, user, token, verbose, user_agent):
+    if len(args) == 0:
+        usage_sshkey()
+    if args[0] == 'list':
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.sshkey_list()
+    elif args[0] == 'upload':
+        key = None
+        if len(args) == 1:
+            key = os.getenv('HOME') + '/.ssh/id_rsa.pub'
+        elif len(args) == 2:
+            key = args[1]
+        else:
+            usage_sshkey()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.sshkey_upload(key)
+    elif args[0] == 'delete':
+        if len(args) != 2:
+            usage_sshkey()
+        handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+        handle.sshkey_delete(args[1])
+    else:
+        usage_sshkey()
+
+def whoami(args, baseurl, user, token, verbose, user_agent):
+    handle = blih(baseurl=baseurl, user=user, token=token, verbose=verbose, user_agent=user_agent)
+    handle.whoami()
+
+def usage():
+    print ('Usage: ' + sys.argv[0] + ' [options] command ...')
+    print ()
+    print ('Global Options :')
+    print ('\t-u user | --user=user\t\t-- Run as user')
+    print ('\t-v | --verbose\t\t\t-- Verbose')
+    print ('\t-b url | --baseurl=url\t\t-- Base URL for BLIH')
+    print ('\t-t | --token\t\t\t-- Specify token in the cmdline')
+    print ()
+    print ('Commands :')
+    print ('\trepository\t\t\t-- Repository management')
+    print ('\tsshkey\t\t\t\t-- SSH-KEYS management')
+    print ('\twhoami\t\t\t\t-- Print who you are')
+    sys.exit(1)
+
+if __name__ == "__main__":
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], 'hvu:b:t:p:VU:', ['help', 'verbose', 'user=', 'baseurl=', 'token=', 'password=', 'version', 'useragent='])
+    except getopt.GetoptError as e:
+        print (e)
+        usage()
+
+    verbose = False
+    user = None
+    baseurl = 'https://blih.epitech.eu/'
+    token = None
+    user_agent = 'blih-' + str(version)
+
+    for o, a in opts:
+        if o in ('-h', '--help'):
+            usage()
+        elif o in ('-v', '--verbose'):
+            verbose = True
+        elif o in ('-u', '--user'):
+            user = a
+        elif o in ('-b', '--baseurl'):
+            baseurl = a
+        elif o in ('-t', '--token'):
+            token = bytes(a, 'utf-8')
+        elif o in ('-V', '--version'):
+            print ('blih version ' + str(version))
+            sys.exit(0)
+        elif o in ('-p', '--password'):
+            token = bytes(hashlib.sha512(bytes(a, 'utf8')).hexdigest(), 'utf8')
+        elif o in ('-U', '--useragent'):
+            user_agent = a
+        else:
+            usage()
+
+    if len(args) == 0:
+        usage()
+
+    if args[0] == 'repository':
+        repository(args[1:], baseurl, user, token, verbose, user_agent)
+    elif args[0] == 'sshkey':
+        sshkey(args[1:], baseurl, user, token, verbose, user_agent)
+    elif args[0] == 'whoami':
+        whoami(args[1:], baseurl, user, token, verbose, user_agent)
+    else:
+        usage()
